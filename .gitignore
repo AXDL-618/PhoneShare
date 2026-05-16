@@ -1,0 +1,39 @@
+# Android / Gradle
+AndroidSender/.gradle/
+AndroidSender/.idea/
+AndroidSender/.kotlin/
+AndroidSender/build/
+AndroidSender/app/build/
+AndroidSender/local.properties
+AndroidSender/*.iml
+AndroidSender/app/*.iml
+
+# Android signing files
+AndroidSender/*.jks
+AndroidSender/keystore.properties
+
+# Backup files
+AndroidSender/app/build.gradle.bak*
+*.bak
+*.tmp
+
+# .NET / Windows Receiver
+WindowsReceiver/bin/
+WindowsReceiver/obj/
+WindowsReceiver/.vs/
+WindowsReceiver/*.user
+WindowsReceiver/*.suo
+
+# Release artifacts
+release/
+*.apk
+*.aab
+*.exe
+*.msix
+*.zip
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
