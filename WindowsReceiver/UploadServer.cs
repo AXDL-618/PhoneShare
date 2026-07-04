@@ -1,4 +1,5 @@
 using System.IO;
+using System.Diagnostics;
 using System.Text.Json;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
@@ -17,6 +18,7 @@ public sealed class UploadServer
     private readonly Action<string> _log;
     private readonly Action<IReadOnlyList<string>> _filesReceived;
     private readonly Action<PairedPhoneDevice> _devicePaired;
+    private readonly Action<UploadProgress> _uploadProgress;
 
     public bool IsRunning => _app != null;
 
@@ -24,12 +26,14 @@ public sealed class UploadServer
         Func<ReceiverSettings> settingsProvider,
         Action<string> log,
         Action<IReadOnlyList<string>> filesReceived,
-        Action<PairedPhoneDevice> devicePaired)
+        Action<PairedPhoneDevice> devicePaired,
+        Action<UploadProgress> uploadProgress)
     {
         _settingsProvider = settingsProvider;
         _log = log;
         _filesReceived = filesReceived;
         _devicePaired = devicePaired;
+        _uploadProgress = uploadProgress;
     }
 
     public async Task StartAsync()
@@ -169,7 +173,14 @@ public sealed class UploadServer
                     bufferSize: 1024 * 1024,
                     useAsync: true))
                 {
-                    await section.Body.CopyToAsync(fs, ct);
+                    var transferId = Guid.NewGuid().ToString("N");
+                    await CopyWithProgressAsync(
+                        transferId,
+                        section.Body,
+                        fs,
+                        Path.GetFileName(targetPath),
+                        request.ContentLength,
+                        ct);
                 }
 
                 saved.Add(targetPath);
@@ -254,8 +265,61 @@ public sealed class UploadServer
 
         return fileName.Trim().Trim('"');
     }
+
+    private async Task CopyWithProgressAsync(
+        string transferId,
+        Stream source,
+        Stream destination,
+        string fileName,
+        long? totalBytes,
+        CancellationToken ct)
+    {
+        var buffer = new byte[1024 * 1024];
+        var received = 0L;
+        var stopwatch = Stopwatch.StartNew();
+        var lastReport = TimeSpan.Zero;
+
+        Report(false);
+
+        while (true)
+        {
+            var read = await source.ReadAsync(buffer.AsMemory(0, buffer.Length), ct);
+            if (read == 0) break;
+
+            await destination.WriteAsync(buffer.AsMemory(0, read), ct);
+            received += read;
+
+            if (stopwatch.Elapsed - lastReport >= TimeSpan.FromMilliseconds(250))
+            {
+                lastReport = stopwatch.Elapsed;
+                Report(false);
+            }
+        }
+
+        Report(true);
+
+        void Report(bool completed)
+        {
+            var seconds = Math.Max(stopwatch.Elapsed.TotalSeconds, 0.001);
+            _uploadProgress(new UploadProgress(
+                transferId,
+                fileName,
+                received,
+                totalBytes,
+                received / seconds,
+                completed));
+        }
+    }
 }
 
+
+public sealed record UploadProgress(
+    string TransferId,
+    string FileName,
+    long BytesReceived,
+    long? TotalBytes,
+    double BytesPerSecond,
+    bool IsCompleted);
 
 public sealed class PairRequest
 {

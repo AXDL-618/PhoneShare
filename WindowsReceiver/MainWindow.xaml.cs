@@ -19,6 +19,7 @@ public partial class MainWindow : Window
     private readonly UploadServer _server;
     private readonly System.Drawing.Icon _appIcon;
     private readonly WinForms.NotifyIcon _notifyIcon;
+    private readonly Dictionary<string, UploadProgress> _activeUploads = new();
     private bool _exitRequested;
 
     public MainWindow()
@@ -30,7 +31,8 @@ public partial class MainWindow : Window
             () => _settings,
             AppendLog,
             OnFilesReceived,
-            OnDevicePaired
+            OnDevicePaired,
+            OnUploadProgress
         );
 
         _appIcon = GetAppIcon();
@@ -338,6 +340,101 @@ public partial class MainWindow : Window
         });
     }
 
+    private void OnUploadProgress(UploadProgress progress)
+    {
+        Dispatcher.Invoke(() =>
+        {
+            UploadProgressPanel.Visibility = Visibility.Visible;
+
+            if (progress.IsCompleted)
+            {
+                _activeUploads.Remove(progress.TransferId);
+            }
+            else
+            {
+                _activeUploads[progress.TransferId] = progress;
+            }
+
+            var active = _activeUploads.Values.ToList();
+            if (active.Count == 0)
+            {
+                UploadFileText.Text = $"接收完成：{progress.FileName}";
+                UploadProgressBar.IsIndeterminate = false;
+                UploadProgressBar.Value = 100;
+                UploadPercentText.Text = "100%";
+                UploadDetailText.Text = $"{FormatBytes(progress.BytesReceived)} 已保存";
+                return;
+            }
+
+            if (active.Count == 1)
+            {
+                RenderUploadProgress(active[0], $"正在接收：{active[0].FileName}");
+                return;
+            }
+
+            var known = active.Where(p => p.TotalBytes.GetValueOrDefault() > 0).ToList();
+            var total = known.Sum(p => p.TotalBytes!.Value);
+            var received = known.Sum(p => Math.Min(p.BytesReceived, p.TotalBytes!.Value));
+            var speed = active.Sum(p => p.BytesPerSecond);
+
+            UploadFileText.Text = $"正在接收 {active.Count} 个文件";
+            if (known.Count == active.Count && total > 0)
+            {
+                var percent = Math.Clamp(received * 100.0 / total, 0, 99.9);
+                UploadProgressBar.IsIndeterminate = false;
+                UploadProgressBar.Value = percent;
+                UploadPercentText.Text = $"{percent:0.0}%";
+
+                var eta = "";
+                if (speed > 1 && received < total)
+                {
+                    var remainingSeconds = (total - received) / speed;
+                    eta = $" · 剩余约 {FormatDuration(TimeSpan.FromSeconds(remainingSeconds))}";
+                }
+
+                UploadDetailText.Text = $"{FormatBytes(received)} / {FormatBytes(total)} · {FormatBytes((long)speed)}/s{eta}";
+            }
+            else
+            {
+                var receivedKnown = active.Sum(p => p.BytesReceived);
+                UploadProgressBar.IsIndeterminate = true;
+                UploadProgressBar.Value = 0;
+                UploadPercentText.Text = "接收中";
+                UploadDetailText.Text = $"{FormatBytes(receivedKnown)} · {FormatBytes((long)speed)}/s";
+            }
+        });
+    }
+
+    private void RenderUploadProgress(UploadProgress progress, string title)
+    {
+        UploadFileText.Text = title;
+
+        var total = progress.TotalBytes.GetValueOrDefault();
+        if (total > 0)
+        {
+            var percent = Math.Clamp(progress.BytesReceived * 100.0 / total, 0, 99.9);
+            UploadProgressBar.IsIndeterminate = false;
+            UploadProgressBar.Value = percent;
+            UploadPercentText.Text = $"{percent:0.0}%";
+
+            var eta = "";
+            if (progress.BytesPerSecond > 1 && progress.BytesReceived < total)
+            {
+                var remainingSeconds = (total - progress.BytesReceived) / progress.BytesPerSecond;
+                eta = $" · 剩余约 {FormatDuration(TimeSpan.FromSeconds(remainingSeconds))}";
+            }
+
+            UploadDetailText.Text = $"{FormatBytes(progress.BytesReceived)} / {FormatBytes(total)} · {FormatBytes((long)progress.BytesPerSecond)}/s{eta}";
+        }
+        else
+        {
+            UploadProgressBar.IsIndeterminate = true;
+            UploadProgressBar.Value = 0;
+            UploadPercentText.Text = "接收中";
+            UploadDetailText.Text = $"{FormatBytes(progress.BytesReceived)} · {FormatBytes((long)progress.BytesPerSecond)}/s";
+        }
+    }
+
 
     private void OnDevicePaired(PairedPhoneDevice phone)
     {
@@ -508,6 +605,30 @@ public partial class MainWindow : Window
 
     private static SolidColorBrush BrushFrom(string hex) =>
         new((System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString(hex));
+
+    private static string FormatBytes(long bytes)
+    {
+        string[] units = ["B", "KB", "MB", "GB", "TB"];
+        var value = Math.Max(bytes, 0);
+        var size = (double)value;
+        var unit = 0;
+        while (size >= 1024 && unit < units.Length - 1)
+        {
+            size /= 1024;
+            unit++;
+        }
+
+        return unit == 0 ? $"{value} {units[unit]}" : $"{size:0.0} {units[unit]}";
+    }
+
+    private static string FormatDuration(TimeSpan duration)
+    {
+        if (duration.TotalHours >= 1)
+            return $"{(int)duration.TotalHours}小时{duration.Minutes}分钟";
+        if (duration.TotalMinutes >= 1)
+            return $"{duration.Minutes}分钟{duration.Seconds}秒";
+        return $"{Math.Max(1, duration.Seconds)}秒";
+    }
 
     private void RenamePairedPhone_Click(object sender, RoutedEventArgs e)
     {

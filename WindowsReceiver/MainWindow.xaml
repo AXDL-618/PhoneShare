@@ -200,6 +200,7 @@
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto"/>
                         <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
                         <RowDefinition Height="*"/>
                     </Grid.RowDefinitions>
                     <DockPanel Grid.Row="0" LastChildFill="True" Margin="0,0,0,12">
@@ -215,7 +216,65 @@
                     <TextBlock Grid.Row="1" Text="接收成功后会自动保存到上方目录，并在托盘显示提醒。托盘右键菜单可用于打开主窗口、打开文件夹或退出程序。"
                                Foreground="{StaticResource TextSub}" FontSize="12.5" Margin="0,0,0,12"/>
 
-                    <Border Grid.Row="2" Background="#F9FAFB" BorderBrush="#E5E7EB" BorderThickness="1" CornerRadius="12" Padding="12">
+                    <Border x:Name="UploadProgressPanel"
+                            Grid.Row="2"
+                            Visibility="Collapsed"
+                            Background="#EFF6FF"
+                            BorderBrush="#BFDBFE"
+                            BorderThickness="1"
+                            CornerRadius="12"
+                            Padding="12"
+                            Margin="0,0,0,12">
+                        <Grid>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                            </Grid.RowDefinitions>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+
+                            <TextBlock x:Name="UploadFileText"
+                                       Grid.Row="0"
+                                       Grid.Column="0"
+                                       Text="正在接收"
+                                       FontSize="13"
+                                       FontWeight="SemiBold"
+                                       Foreground="{StaticResource TextMain}"
+                                       TextTrimming="CharacterEllipsis"
+                                       Margin="0,0,12,6"/>
+                            <TextBlock x:Name="UploadPercentText"
+                                       Grid.Row="0"
+                                       Grid.Column="1"
+                                       Text="0%"
+                                       FontSize="13"
+                                       FontWeight="SemiBold"
+                                       Foreground="{StaticResource Primary}"
+                                       Margin="8,0,0,6"/>
+
+                            <ProgressBar x:Name="UploadProgressBar"
+                                         Grid.Row="1"
+                                         Grid.Column="0"
+                                         Grid.ColumnSpan="2"
+                                         Height="8"
+                                         Minimum="0"
+                                         Maximum="100"
+                                         Value="0"/>
+
+                            <TextBlock x:Name="UploadDetailText"
+                                       Grid.Row="2"
+                                       Grid.Column="0"
+                                       Grid.ColumnSpan="2"
+                                       Text="等待传输"
+                                       FontSize="12"
+                                       Foreground="{StaticResource TextSub}"
+                                       Margin="0,7,0,0"/>
+                        </Grid>
+                    </Border>
+
+                    <Border Grid.Row="3" Background="#F9FAFB" BorderBrush="#E5E7EB" BorderThickness="1" CornerRadius="12" Padding="12">
                         <TextBox x:Name="LogBox"
                                  Style="{x:Null}"
                                  Background="#F9FAFB"

@@ -21,7 +21,11 @@ import okhttp3.Request
 import okhttp3.RequestBody
 import okio.BufferedSink
 import java.io.IOException
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
 
 class UploadService : Service() {
     private val client = OkHttpClient.Builder()
@@ -63,55 +67,115 @@ class UploadService : Service() {
     }
 
     private fun runUpload(startId: Int, uris: List<Uri>, device: PairedDevice) {
-        var okCount = 0
-        var failMessage: String? = null
-        var preferredUrl: String? = null
-
-        try {
-            uris.forEachIndexed { index, uri ->
-                val name = FileUtils.displayName(this, uri)
-                updateNotification("正在发送 ${index + 1}/${uris.size}: $name", index, uris.size, true)
-
-                val urlsToTry = buildList {
-                    preferredUrl?.let { add(it) }
-                    addAll(device.urls.filterNot { it == preferredUrl })
-                }
-
-                var uploaded = false
-                var lastError: Exception? = null
-                for (url in urlsToTry) {
-                    try {
-                        uploadOne(url, device.token, uri) { sent, total ->
-                            if (total > 0) {
-                                val percent = ((sent * 100) / total).coerceIn(0, 100).toInt()
-                                updateNotification("正在发送 ${index + 1}/${uris.size}: $percent%", percent, 100, false)
-                            }
-                        }
-                        preferredUrl = url
-                        uploaded = true
-                        okCount++
-                        break
-                    } catch (e: Exception) {
-                        lastError = e
-                    }
-                }
-
-                if (!uploaded) {
-                    throw IOException("${name} 发送失败：${lastError?.message ?: "未知错误"}")
-                }
-            }
-        } catch (e: Exception) {
-            failMessage = e.message ?: e.javaClass.simpleName
+        if (uris.isEmpty()) {
+            updateNotification("没有可发送的文件", 0, 0, false)
+            stopForeground(false)
+            stopSelf(startId)
+            return
         }
 
+        val progress = ConcurrentHashMap<Uri, FileProgress>()
+        val okCount = AtomicInteger(0)
+        val doneCount = AtomicInteger(0)
+        val firstError = AtomicReference<String?>(null)
+
+        val fileInfos = uris.map { uri ->
+            val name = FileUtils.displayName(this, uri)
+            val size = FileUtils.size(this, uri)
+            UploadItem(uri, name, size)
+        }
+
+        val parallelism = chooseParallelism(fileInfos)
+        val executor = Executors.newFixedThreadPool(parallelism)
+
+        fileInfos.forEach { item ->
+            progress[item.uri] = FileProgress(name = item.name, sent = 0L, total = item.size, done = false)
+        }
+
+        updateAggregateNotification(progress, doneCount.get(), uris.size)
+
+        try {
+            val futures = fileInfos.map { item ->
+                executor.submit {
+                    val uri = item.uri
+                    val name = item.name
+                    var uploaded = false
+                    var lastError: Exception? = null
+
+                    for (url in device.urls) {
+                        try {
+                            uploadOne(url, device.token, uri) { sent, total ->
+                                progress[uri] = FileProgress(name, sent, total, done = false)
+                                updateAggregateNotification(progress, doneCount.get(), uris.size)
+                            }
+                            uploaded = true
+                            okCount.incrementAndGet()
+                            progress[uri] = progress[uri]?.copy(done = true) ?: FileProgress(name, 0L, -1L, true)
+                            doneCount.incrementAndGet()
+                            updateAggregateNotification(progress, doneCount.get(), uris.size)
+                            break
+                        } catch (e: Exception) {
+                            lastError = e
+                        }
+                    }
+
+                    if (!uploaded) {
+                        val message = "${name} 发送失败：${lastError?.message ?: "未知错误"}"
+                        firstError.compareAndSet(null, message)
+                        progress[uri] = progress[uri]?.copy(done = true) ?: FileProgress(name, 0L, -1L, true)
+                        doneCount.incrementAndGet()
+                        updateAggregateNotification(progress, doneCount.get(), uris.size)
+                    }
+                }
+            }
+
+            futures.forEach { it.get() }
+        } catch (e: Exception) {
+            firstError.compareAndSet(null, e.message ?: e.javaClass.simpleName)
+        } finally {
+            executor.shutdownNow()
+        }
+
+        val failMessage = firstError.get()
         if (failMessage == null) {
-            updateNotification("发送完成：$okCount 个文件", 100, 100, false)
+            updateNotification("发送完成：${okCount.get()} 个文件", 100, 100, false)
         } else {
-            updateNotification("发送失败：$failMessage", 0, 0, false)
+            updateNotification("发送完成 ${okCount.get()}/${uris.size}，失败：$failMessage", 0, 0, false)
         }
 
         stopForeground(false)
         stopSelf(startId)
+    }
+
+    private fun updateAggregateNotification(progress: Map<Uri, FileProgress>, done: Int, totalFiles: Int) {
+        val totals = progress.values
+        val knownTotal = totals.filter { it.total > 0 }.sumOf { it.total }
+        val knownSent = totals.filter { it.total > 0 }.sumOf { it.sent.coerceAtMost(it.total) }
+
+        if (knownTotal > 0 && totals.all { it.total > 0 }) {
+            val percent = ((knownSent * 100) / knownTotal).coerceIn(0, 100).toInt()
+            updateNotification("正在发送 $done/$totalFiles 个文件：$percent%", percent, 100, false)
+        } else {
+            updateNotification("正在发送 $done/$totalFiles 个文件", done, totalFiles, true)
+        }
+    }
+
+    private fun chooseParallelism(items: List<UploadItem>): Int {
+        if (items.size <= 1) return 1
+
+        val knownSizes = items.map { it.size }.filter { it > 0 }
+        if (knownSizes.isEmpty()) return minOf(DEFAULT_PARALLEL_UPLOADS, items.size)
+
+        val maxSize = knownSizes.maxOrNull() ?: 0L
+        val totalSize = knownSizes.sum()
+        val limit = when {
+            maxSize >= VERY_LARGE_FILE_BYTES -> 2
+            maxSize >= LARGE_FILE_BYTES -> 3
+            totalSize >= LARGE_BATCH_BYTES -> 4
+            else -> DEFAULT_PARALLEL_UPLOADS
+        }
+
+        return minOf(limit, items.size)
     }
 
     private fun uploadOne(baseUrl: String, token: String, uri: Uri, onProgress: (Long, Long) -> Unit) {
@@ -185,6 +249,10 @@ class UploadService : Service() {
     companion object {
         private const val CHANNEL_ID = "phone_share_upload"
         private const val NOTIFICATION_ID = 23001
+        private const val DEFAULT_PARALLEL_UPLOADS = 8
+        private const val LARGE_FILE_BYTES = 200L * 1024L * 1024L
+        private const val VERY_LARGE_FILE_BYTES = 1024L * 1024L * 1024L
+        private const val LARGE_BATCH_BYTES = 1500L * 1024L * 1024L
         private const val EXTRA_URIS = "uris"
         private const val EXTRA_DEVICE_NAME = "deviceName"
         private const val EXTRA_DEVICE_ID = "deviceId"
@@ -203,6 +271,19 @@ class UploadService : Service() {
         }
     }
 }
+
+private data class UploadItem(
+    val uri: Uri,
+    val name: String,
+    val size: Long
+)
+
+private data class FileProgress(
+    val name: String,
+    val sent: Long,
+    val total: Long,
+    val done: Boolean
+)
 
 class UriRequestBody(
     private val context: Context,
